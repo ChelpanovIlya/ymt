@@ -1,0 +1,336 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use DBI;
+use Data::GUID;
+use Digest::MD5 qw(md5);
+use POSIX qw(strftime);
+use Getopt::Long;
+use MIME::Base64 qw(encode_base64);
+use Encode qw(encode);
+use File::Basename qw(basename dirname);
+use Term::ReadKey;
+use open qw(:std :utf8); 
+use Data::Dumper;
+$Data::Dumper::Terse = 1;
+
+our $VERSION="1.0.0";
+
+our ($QUERY, $INPUT_FILE, $SCHEME, $OUTPUT_FILE, $DRIVER,
+$ADD_ID, $HASH_COLUMNS, $STD_UUID, 
+$LIMIT, $PRINT_COLUMNS, $PRINT_SCHEME, $PRINT_RECORD, 
+$HOST, $PORT, $USER, $DB, $PASSWORD,
+$HELP);
+
+$OUTPUT_FILE='auto'; 
+$SCHEME='scheme.pb';
+$DRIVER='Pg';
+$HOST="localhost";
+
+$HELP=!@ARGV;
+
+GetOptions(
+  'driver=s'=>\$DRIVER,
+  'query|q=s'=>\$QUERY,
+  'input-file|f=s'=>\$INPUT_FILE,
+  'scheme|s=s'=>\$SCHEME,
+	'output-file|o=s'=>\$OUTPUT_FILE,
+	'add-id=s'=>\$ADD_ID,
+  'hash-columns=s'=>\$HASH_COLUMNS,
+  'std-uuid!' =>\$STD_UUID,
+  
+  'limit=i'=>\$LIMIT,
+	'print-columns!'=>\$PRINT_COLUMNS,
+	'print-scheme!'=>\$PRINT_SCHEME,
+	'print-record!'=>\$PRINT_RECORD,
+  
+	'host|h=s'=>\$HOST,
+	'port|p=i'=>\$PORT,
+	'username|U=s'=>\$USER,
+	'dbname|d=s'=>\$DB,
+	'password=s'=>\$PASSWORD,
+	
+	'help' => \$HELP,
+	'version' => sub { print "ymt $VERSION\n"; exit 0; },
+) || die "Run 'ymt --help' for usage.\n";
+
+
+if ( $HELP ) {
+  print <<EOT;
+ymt $VERSION -- YDB migration tool
+
+Connects to a PostgreSQL database, fetches data using a SQL query, and converts it into 
+the CSV dump format used by YDB. The resulting file can be loaded into a YDB table using 
+the ydb CLI "tools restore" command. Ymt can be used with any SQL-compatible 
+database with a Perl DBI driver installed. Over 50 SQL-compatible (or SQL-accessible) 
+databases can be used with Perl via DBI, thanks to native DBD:: modules and bridge 
+drivers like DBD::ODBC and DBD::JDBC.
+
+
+Usage: ymt [options]
+
+Required input:
+  -q, --query=STRING        SQL query to execute
+  -f, --input-file=FILE     Read SQL query from file
+  -s, --scheme=FILE         Path to protobuf schema file (default: scheme.pb)
+
+Output:
+  -o, --output-file=FILE    Output CSV file (default: auto → <scheme_dir>/data_00.csv)
+
+Row processing:
+      --add-id=NAME         Add a generated UUID-id column with given name
+      --std-uuid            Use standard UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+                            (default: URL-safe Base64-encoded short UUID)
+      --hash-columns=COLS   Replace column values with MD5-based identifiers (UUID or short format)
+
+Database connection:
+  -D, --driver=NAME         DBI driver (default: Pg)
+                            Examples: mysql, Pg, SQLite, Oracle  
+  -h, --host=HOST           Database host (default: localhost)
+  -p, --port=PORT           Database port (default: 5432)
+  -U, --username=USER       Database user
+  -d, --dbname=DB           Database name
+      --password=PASS       Database password
+                            password can be specified in YMT_PASSWORD environment variable
+
+Debugging and introspection:
+      --limit=N             Limit number of output rows
+      --print-scheme        Print column names and types from schema and exit
+      --print-columns       Print column names from SQL result and exit
+      --print-record        Print every SQL result record
+
+Examples:
+  ymt --query="SELECT code, name FROM setting" --scheme=backup/setting/scheme.pb
+  ymt -f query.sql -s backup/setting/scheme.pb -o output.csv --add-id=id
+  ymt --scheme=backup/setting/scheme.pb --print-scheme
+  ymt --driver=mysql -p 3306 -d mydb -U scott -q "select * from setting" -s=backup/setting/scheme.pb
+  
+Notes:
+  - in query values in columns of type date, datetime, and timestamp must be converted to UTC.
+EOT
+  exit(0);
+}
+
+# parse scheme
+my ($columns,$col_types)=extract_column_names_from_proto_text($SCHEME);
+if ( $PRINT_SCHEME ) {
+  printf "%-20s %s\n","Column","Type";
+  print  "-------------------- ----------\n";
+  for my $c ( @$columns ) {
+    printf "%-20s %s\n",$c, $col_types->{$c};
+  }
+  exit(0);
+}
+
+die "Error: required option --scheme not specified\n" unless defined $SCHEME;
+
+if ( $INPUT_FILE ) {
+  $QUERY = read_file($INPUT_FILE);
+}
+
+die "Error: no query specified; use --query or --input-file\n" if ( ! $QUERY );
+
+if ( $DRIVER eq 'Pg' ) {
+  $PORT||=5432;
+}
+if ( $DRIVER eq 'mysql' ) {
+  $PORT||=3306;
+}
+
+my $dsn = "dbi:$DRIVER:host=$HOST;port=$PORT";
+if ( $DB ) {
+  $dsn .= ";dbname=$DB";
+}
+
+$PASSWORD||=$ENV{YMT_PASSWORD};
+if (!defined $PASSWORD) {
+    if (!-t STDIN) {
+        die "Password required but no terminal available (use --password or YMT_PASSWORD)\n";
+    }
+    print STDERR "Password for user '$USER': ";
+    ReadMode('noecho');       # Отключить эхо
+    $PASSWORD = ReadLine(0);  # Считать строку
+    chomp $PASSWORD;
+    ReadMode('restore');      # Восстановить терминал
+    print STDERR "\n";
+}
+
+# Connect
+my $dbh = DBI->connect($dsn, $USER, $PASSWORD, {
+    RaiseError => 1,
+    AutoCommit => 1,
+    PrintError => 0,
+}) or die "Cannot connect to database (driver=$DRIVER): $DBI::errstr\n";
+
+
+# Prepare a query
+my $sth = $dbh->prepare($QUERY) or die "Cannot prepare: $DBI::errstr\n";
+
+# Execute the query
+$sth->execute() or die "Cannot execute: $DBI::errstr\n";
+
+# Fetch and print the column names
+my $num_fields = $sth->{NUM_OF_FIELDS};
+if ( $PRINT_COLUMNS ) {
+  print join("\n", @{$sth->{NAME}}), "\n";
+  exit(0);
+}
+
+# open output file
+my $out;
+if ( $OUTPUT_FILE eq 'auto' ) {
+  my $dir=dirname($SCHEME);
+  $OUTPUT_FILE = "$dir/data_00.csv";
+}
+open($out, ">:encoding(UTF-8)", $OUTPUT_FILE) || die "Cannot open output file $OUTPUT_FILE: $!\n";
+
+print STDERR "Writing to: $OUTPUT_FILE\n";
+
+# Fetch and convert the data
+my $cnt=0;
+
+while (my $r = $sth->fetchrow_hashref) {
+  if ( $LIMIT && $cnt >= $LIMIT ) {
+    $sth->finish;
+    last;
+  }
+
+  print STDERR Dumper($r) if $PRINT_RECORD;
+
+  if ( $ADD_ID ) {
+    if ( $STD_UUID ) {
+      $r->{$ADD_ID} = Data::GUID->new->as_string;
+    } else {
+      $r->{$ADD_ID} = short_guid();
+    }
+  }
+
+  if ( $HASH_COLUMNS ) {  
+    for my $c ( split(",",$HASH_COLUMNS) ) {
+      if ( exists($r->{$c}) ) {
+        $r->{$c} = hash_column($r->{$c});
+      }
+    }
+  }
+  
+  print $out join(",",map(map_data($r,$_,$col_types->{$_}),@$columns))."\n";
+  
+  $cnt++;
+  print STDERR "$cnt\r" if ( $cnt%1000 == 0 );
+}
+print STDERR "\rWrote $cnt records.\n";
+
+# Disconnect
+$dbh->disconnect();
+
+sub map_data {
+  my ($r,$c,$type) = @_;
+  
+  my $res;
+  if ( exists($r->{$c}) && defined($r->{$c}) ) {
+    if ($type && ($type eq 'UTF8' || $type eq 'STRING') ) {
+      $res = '"'.escape($r->{$c}).'"';
+    } else {
+      $res = $r->{$c};
+      if ($res =~ /[",\n\r]/) {
+          die "Error: non-text column '$c' (type: $type) contains forbidden characters: <$res>\n";
+      }      
+    }
+  } else {
+    $res = "null";
+  }
+    
+  return $res;
+}
+
+sub hash_column {
+  my $value=shift;
+  
+  my $md5_raw = md5(encode('UTF-8', $value));
+  if ( $STD_UUID ) {
+    return join '-', unpack 'H8 H4 H4 H4 H12', $md5_raw;
+  } else {
+    return url_friendly(encode_base64($md5_raw, ''));
+  }
+}
+
+sub escape {
+    my $res=shift;
+    
+    return $res if ! defined($res);
+    #\x00-\x1F
+    $res =~ s/([\r\n\x22\x23\x25\x26\x27\x28\x29\x2B\x2C\x3A\x3C\x3D\x3E\x3F\x5B\x5C\x5D\x5E\x60\x7B\x7C\x7D])/
+        '%' . sprintf('%02X', ord($1))
+    /ge;    
+    $res=~s/ /+/g;
+    return $res;
+}
+
+sub short_guid {
+  my $guid=Data::GUID->guid_base64;
+	return url_friendly($guid);
+}
+
+sub url_friendly {
+  my $res = shift;
+	$res =~ s/=//g;
+	$res =~ tr/\+\//-_/;
+	return $res;
+}
+
+sub extract_column_names_from_proto_text {
+    my ($filename) = @_;
+    open my $fh, '<', $filename
+        or die "Cannot open '$filename': $!\n";
+
+    my $columns=[];
+    my $col_types={};
+    my $in_columns = 0;
+    my $brace_depth = 0;
+    my $column;
+
+    while (my $line = <$fh>) {
+        $line =~ s/#.*$//;
+
+        if ($line =~ /^\s*columns\s*\{/) {
+            $in_columns = 1;
+            $brace_depth = 1;
+            next;
+        }
+
+        next unless $in_columns;
+
+        $brace_depth += () = $line =~ /\{/g;
+        $brace_depth -= () = $line =~ /\}/g;
+
+        if ($line =~ /\bname:\s*"([^"]+)"/) {
+            push @$columns, $1;
+            $column = $1;
+        }
+
+        if ($line =~ /\btype_id:\s*(\S+)/) {
+            $col_types->{$column}=$1;
+        }
+
+
+        if ($brace_depth <= 0) {
+            $in_columns = 0;
+        }
+    }
+
+    close $fh;
+    return ($columns,$col_types);
+}
+
+sub read_file {
+  my $filename = shift;
+  open my $fh, '<', $filename
+      or die "Cannot open '$filename': $!\n";
+
+  local $/ = undef;  # enable "slurp mode"
+  my $content = <$fh>;
+  close $fh;
+
+  return $content;
+}
+
