@@ -235,24 +235,67 @@ print STDERR "\rWrote $cnt records.\n";
 # Disconnect
 $dbh->disconnect();
 
+# Format a single field value for YDB-compatible CSV output.
+# - UTF8/STRING: quoted + URL-encoded
+# - All non-text types: first check for forbidden characters, then validate format
 sub map_data {
-  my ($r,$c,$type) = @_;
-  
-  my $res;
-  if ( exists($r->{$c}) && defined($r->{$c}) ) {
-    if ($type && ($type eq 'UTF8' || $type eq 'STRING') ) {
-      $res = '"'.escape($r->{$c}).'"';
-    } else {
-      $res = $r->{$c};
-      if ($res =~ /[",\n\r]/) {
-          die "Error: non-text column '$c' (type: $type) contains forbidden characters: <$res>\n";
-      }      
-    }
-  } else {
-    $res = "null";
-  }
+    my ($r, $c, $type) = @_;
     
-  return $res;
+    # Handle missing (NULL) values
+    if (!exists $r->{$c}) {
+        return "null";
+    }
+    
+    my $val = $r->{$c};
+    
+    if (!defined $val) {
+        return "null";
+    }
+
+    # Textual types: apply YDB-specific escaping and wrap in quotes
+    if ($type && ($type eq 'UTF8' || $type eq 'STRING')) {
+        return '"' . escape($val) . '"';
+    }
+
+    # For ALL non-text types: immediately reject if forbidden characters are present
+    if ($val =~ /[",\n\r]/) {
+        die "Error: non-text column '$c' (type: $type) contains forbidden characters: <$val>\n";
+    }
+
+    # Decimal type: must be a valid number (supports negative and fractional)
+    if ($type && $type =~ /^DECIMAL/) {
+        if ($val !~ /^-?\d+(\.\d+)?$/) {
+            die "Error: column '$c' (type: $type) contains non-numeric value: <$val>\n";
+        }
+        return $val;
+    }
+
+    # Signed integer types: INT8, INT16, INT32, INT64
+    if ($type && $type =~ /^INT(?:8|16|32|64)$/) {
+        if ($val !~ /^-?\d+$/) {
+            die "Error: column '$c' (type: $type) contains non-integer value: <$val>\n";
+        }
+        return $val;
+    }
+
+    # Unsigned integer types: UINT8, UINT16, UINT32, UINT64
+    if ($type && $type =~ /^UINT(?:8|16|32|64)$/) {
+        if ($val !~ /^\d+$/) {
+            die "Error: column '$c' (type: $type) contains non-unsigned-integer value: <$val>\n";
+        }
+        return $val;
+    }
+
+    # Floating-point types: FLOAT, DOUBLE (allow scientific notation)
+    if ($type && ($type eq 'FLOAT' || $type eq 'DOUBLE')) {
+        if ($val !~ /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/) {
+            die "Error: column '$c' (type: $type) contains invalid float value: <$val>\n";
+        }
+        return $val;
+    }
+
+    # All other non-text types (e.g., TIMESTAMP, DATE, BOOL) pass through
+    return $val;
 }
 
 sub hash_column {
@@ -290,20 +333,25 @@ sub url_friendly {
 	return $res;
 }
 
+# Parse YDB protobuf text format (.pb) and extract column names and their types.
+# Handles simple types (e.g., type_id: UTF8) and complex types (e.g., decimal_type).
 sub extract_column_names_from_proto_text {
     my ($filename) = @_;
     open my $fh, '<', $filename
-        or die "Cannot open '$filename': $!\n";
+        or die "Cannot open '$filename': $!";
 
-    my $columns=[];
-    my $col_types={};
+    my $columns = [];
+    my $col_types = {};
     my $in_columns = 0;
     my $brace_depth = 0;
     my $column;
+    my $current_type = '';
 
     while (my $line = <$fh>) {
+        # Remove comments (everything after #)
         $line =~ s/#.*$//;
 
+        # Detect start of a 'columns {...}' block
         if ($line =~ /^\s*columns\s*\{/) {
             $in_columns = 1;
             $brace_depth = 1;
@@ -312,26 +360,66 @@ sub extract_column_names_from_proto_text {
 
         next unless $in_columns;
 
+        # Track nesting depth of braces
         $brace_depth += () = $line =~ /\{/g;
         $brace_depth -= () = $line =~ /\}/g;
 
+        # Extract column name
         if ($line =~ /\bname:\s*"([^"]+)"/) {
             push @$columns, $1;
             $column = $1;
+            $current_type = '';
         }
 
+        # Handle simple type_id (e.g., UTF8, TIMESTAMP)
         if ($line =~ /\btype_id:\s*(\S+)/) {
-            $col_types->{$column}=$1;
+            $current_type = $1;
         }
 
+        # Handle decimal_type { precision: N; scale: M; }
+        if ($line =~ /decimal_type\s*\{/) {
+            my $precision = 0;
+            my $scale = 0;
 
+            # Try to extract precision and scale from the same line
+            if ($line =~ /precision:\s*(\d+)/) {
+                $precision = $1;
+            }
+            if ($line =~ /scale:\s*(\d+)/) {
+                $scale = $1;
+            }
+
+            # If not found, read subsequent lines until block closes
+            while (($precision == 0 || $scale == 0) && $brace_depth > 0) {
+                my $next_line = <$fh>;
+                last unless defined $next_line;
+                $brace_depth += () = $next_line =~ /\{/g;
+                $brace_depth -= () = $next_line =~ /\}/g;
+
+                if ($next_line =~ /precision:\s*(\d+)/) {
+                    $precision = $1;
+                }
+                if ($next_line =~ /scale:\s*(\d+)/) {
+                    $scale = $1;
+                }
+            }
+
+            $current_type = "DECIMAL($precision,$scale)";
+        }
+
+        # Finalize column type when exiting the top-level block
         if ($brace_depth <= 0) {
+            if ($column && $current_type) {
+                $col_types->{$column} = $current_type;
+            }
             $in_columns = 0;
+            $column = '';
+            $current_type = '';
         }
     }
 
     close $fh;
-    return ($columns,$col_types);
+    return ($columns, $col_types);
 }
 
 sub read_file {
