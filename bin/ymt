@@ -1,4 +1,16 @@
 #!/usr/bin/env perl
+#
+# ymt - YDB Migration Tool
+#
+# This script connects to a SQL-compatible database, executes a query, and converts
+# the result to CSV format compatible with YDB. It supports various database drivers
+# through Perl DBI and can process data with options like adding UUIDs or hashing columns.
+#
+# Usage:
+#   ymt [options]
+#
+# See --help for detailed options and examples.
+#
 use strict;
 use warnings;
 use DBI;
@@ -59,7 +71,7 @@ if ( $HELP ) {
   print <<EOT;
 ymt $VERSION -- YDB migration tool
 
-Connects to a PostgreSQL database, fetches data using a SQL query, and converts it into 
+Connects to a database, fetches data using a SQL query, and converts it into 
 the CSV dump format used by YDB. The resulting file can be loaded into a YDB table using 
 the ydb CLI "tools restore" command. Ymt can be used with any SQL-compatible 
 database with a Perl DBI driver installed. Over 50 SQL-compatible (or SQL-accessible) 
@@ -148,10 +160,10 @@ if (!defined $PASSWORD) {
         die "Password required but no terminal available (use --password or YMT_PASSWORD)\n";
     }
     print STDERR "Password for user '$USER': ";
-    ReadMode('noecho');       # Отключить эхо
-    $PASSWORD = ReadLine(0);  # Считать строку
+    ReadMode('noecho');
+    $PASSWORD = ReadLine(0);
     chomp $PASSWORD;
-    ReadMode('restore');      # Восстановить терминал
+    ReadMode('restore');
     print STDERR "\n";
 }
 
