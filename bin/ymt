@@ -253,8 +253,27 @@ sub map_data {
     }
 
     # Textual types: apply YDB-specific escaping and wrap in quotes
-    if ($type && ($type eq 'UTF8' || $type eq 'STRING')) {
+    if ($type && $type eq 'UTF8') {
         return '"' . escape($val) . '"';
+    }
+    if ($type && $type eq 'STRING') {
+        return '"' . escape($val,1) . '"';
+    }
+    if ($type && $type eq 'BOOL') {
+        if (lc($val) eq 'false' || lc($val) eq '0') {
+            return '0';
+        } else {
+            return '1';
+        }
+    }
+    if ($type && ($type eq 'DATETIME' || $type eq 'TIMESTAMP')) {
+        if ($val =~ /^(\d\d\d\d)-(\d\d)-(\d\d) /) {
+            $val =~ s/ /T/;
+        }
+        if ($val =~ /^(\d\d\d\d)-(\d\d)-(\d\d)[ T]\d\d:\d\d:\d\d.\d\d\d\d\d\d$/) {
+            $val .="Z";
+        }
+        return $val;
     }
 
     # For ALL non-text types: immediately reject if forbidden characters are present
@@ -311,12 +330,18 @@ sub hash_column {
 
 sub escape {
     my $res=shift;
+    my $bytes=shift;
     
     return $res if ! defined($res);
     #\x00-\x1F
-    $res =~ s/([\r\n\x22\x23\x25\x26\x27\x28\x29\x2B\x2C\x3A\x3C\x3D\x3E\x3F\x5B\x5C\x5D\x5E\x60\x7B\x7C\x7D])/
+    $res =~ s/([\x00-\x1F\x22\x23\x25\x26\x27\x28\x29\x2B\x2C\x3A\x3C\x3D\x3E\x3F\x5B\x5C\x5D\x5E\x60\x7B\x7C\x7D\x7F])/
         '%' . sprintf('%02X', ord($1))
-    /ge;    
+    /ge;
+    if ( $bytes ) {
+    $res =~ s/([\x80-\xFF])/
+        '%' . sprintf('%02X', ord($1))
+    /ge;
+    }
     $res=~s/ /+/g;
     return $res;
 }
