@@ -30,9 +30,9 @@ CREATE TABLE bank_client (
 ```
 
 ### Последовательность действий
-- через ydb tools dump делаем dump таблицы bank_account
+- через ydb tools dump делаем dump таблицы bank_account без данных
 ```bash
-ydb -p myydb tools dump -p bank_client -o migration_backup
+ydb -p myydb tools dump -p bank_client -o migration_backup --scheme-only
 ```
 в полученном результате нам нужен файл scheme.pb с описанием структуры таблицы.
 
@@ -113,7 +113,7 @@ CREATE TABLE account (
 ```
 Сделаем dump целевой таблицы счетов и соберем таблицы в одной папке migration_backup
 ```bash
-ydb -p myydb tools dump -p bank_account -o tmp
+ydb -p myydb tools dump -p bank_account -o tmp --scheme-only
 mv tmp/bank_account migration_backup/
 rmdir tmp 
 ```
@@ -188,6 +188,22 @@ SQL запрос может возвращать меньше колонок, ч
 
 Значения полей временных типов YDB должны быть в UTC. Необходимую конвертацию нужно предусмотреть 
 на уровне SQL запроса. ymt в текущей реализации конвертацию не выполняет.   
+
+## Обработка значений даты и времени
+
+Параметром --assume-timezone=TZ  можно включить режим приведения к UTC данных в полях типа Date, Datetime и Timestamp.
+Значение TZ может быть "local" или "+HH:MM" или "-HH:MM". Если задано "local" -- используется системная TZ.
+Если задано "+HH:MM" или "-HH:MM" -- используется указанный UTC offset.
+
+Если режим приведения выключен, предполагается, что данные в полях типа Date, Datetime и Timestamp уже в UTC и они 
+выводятся без добавления смещения с техническими корректировками формата для Datetime и Timestamp для обеспечения 
+возможности их импорта в YDB:
+- добавляется "T", если ее нет 
+- добавляется "Z", если ее нет
+
+2025-12-25 08:29:00 → 2025-12-25T08:29:00Z
+
+Это дает возможность просто указать поля в select, без применения функций форматирования.
 
 ## Отладочные параметры
 
