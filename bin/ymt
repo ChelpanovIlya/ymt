@@ -19,7 +19,7 @@ use Digest::MD5 qw(md5);
 use POSIX qw(strftime);
 use Getopt::Long;
 use MIME::Base64 qw(encode_base64);
-use Encode qw(encode);
+use Encode qw(encode decode);
 use File::Basename qw(basename dirname);
 use Term::ReadKey;
 use Time::Local qw(timegm_nocheck timegm timelocal);
@@ -27,7 +27,7 @@ use open qw(:std :utf8);
 use Data::Dumper;
 $Data::Dumper::Terse = 1;
 
-our $VERSION="1.1.0";
+our $VERSION="1.1.1";
 
 our ($QUERY, $INPUT_FILE, $SCHEME, $OUTPUT_FILE, $DRIVER,
 $ADD_ID, $HASH_COLUMNS, $STD_UUID, $ASSUME_TIMEZONE, $TZ_OFFSET,
@@ -141,6 +141,8 @@ die "Error: required option --scheme not specified\n" unless defined $SCHEME;
 
 if ( $INPUT_FILE ) {
   $QUERY = read_file($INPUT_FILE);
+} else {
+  $QUERY = decode('UTF-8', $QUERY);  
 }
 
 die "Error: no query specified; use --query or --input-file\n" if ( ! $QUERY );
