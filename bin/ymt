@@ -98,8 +98,8 @@ Row processing:
       --hash-columns=COLS   Replace column values with MD5-based identifiers (UUID or short format)
       --assume-timezone=TZ  Interpret input date/time values as belonging to the
                             specified time zone. Supported formats:
-                              - 'local' — use system time zone
-                              - '+HH:MM' or '-HH:MM' — fixed UTC offset
+                              - 'local' - use system time zone
+                              - '+HH:MM' or '-HH:MM' - fixed UTC offset
                             Values are converted to UTC before writing to YDB.
                             If omitted, input is assumed to be in UTC.
 Database connection:
@@ -114,14 +114,18 @@ Database connection:
 
 Debugging and introspection:
       --limit=N             Limit number of output rows
-      --print-scheme        Print column names and types from schema and exit
+      --print-scheme        Print column names and types from scheme and exit
       --print-columns       Print column names from SQL result and exit
-      --print-record        Print every SQL result record
+      --print-record        Print every SQL resultset record
 
 Examples:
-  ymt -U postgres --query="SELECT name as username,email FROM users" --scheme=backup/users/scheme.pb --add-id=id
+  ydb -p myydb tools dump -p users --scheme-only -o migration_backup
+  ymt -U postgres --query="SELECT name as username,email FROM users" --scheme=migration_backup/users/scheme.pb --add-id=id
+  ydb -p myydb tools restore -i migration_backup -p .
+
   ymt --scheme=backup/users/scheme.pb --print-scheme
-  ymt --driver=mysql -d mydb -U scott -q "select * from users" -s=backup/users/scheme.pb
+
+  ymt --driver=mysql -d mydb -U scott -q "select ename as name,job,sal as salary from emp" -s=backup/employees/scheme.pb
 EOT
   exit(0);
 }
