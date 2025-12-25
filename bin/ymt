@@ -169,6 +169,7 @@ if (defined($ASSUME_TIMEZONE)) {
   } else {
     $TZ_OFFSET = parse_tz_offset($ASSUME_TIMEZONE);
   }
+  printf STDERR "Converting date and time values to UTC using offset %s\n",format_tz_offset($TZ_OFFSET);  
 } else {
   $TZ_OFFSET = 0;
 }
@@ -538,4 +539,13 @@ sub adjust_datetime_to_utc {
 
     # Unrecognized format – return as-is
     die "Invalid date/time format in column $column: $val\n";
+}
+
+sub format_tz_offset {
+    my ($seconds) = @_;
+    my $sign = $seconds < 0 ? '-' : '+';
+    my $abs = abs($seconds);
+    my $h = int($abs / 3600);
+    my $m = int(($abs % 3600) / 60);
+    return sprintf "%s%02d:%02d", $sign, $h, $m;
 }
