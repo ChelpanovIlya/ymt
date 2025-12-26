@@ -27,7 +27,7 @@ use open qw(:std :utf8);
 use Data::Dumper;
 $Data::Dumper::Terse = 1;
 
-our $VERSION="1.1.1";
+our $VERSION="1.1.2";
 
 our ($QUERY, $INPUT_FILE, $SCHEME, $OUTPUT_FILE, $DRIVER,
 $ADD_ID, $HASH_COLUMNS, $STD_UUID, $ASSUME_TIMEZONE, $TZ_OFFSET,
