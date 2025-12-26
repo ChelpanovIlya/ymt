@@ -158,7 +158,10 @@ if ( $DRIVER eq 'mysql' ) {
   $PORT||=3306;
 }
 
-my $dsn = "dbi:$DRIVER:host=$HOST;port=$PORT";
+my $dsn = "dbi:$DRIVER:";
+$dsn.="host=$HOST;" if $HOST;
+$dsn.="port=$PORT;" if $PORT;
+
 if ( $DB ) {
   $dsn .= ";dbname=$DB";
 }
@@ -175,7 +178,7 @@ if (defined($ASSUME_TIMEZONE)) {
 }
 
 $PASSWORD||=$ENV{YMT_PASSWORD};
-if (!defined $PASSWORD) {
+if (!defined $PASSWORD && $USER) {
     if (!-t STDIN) {
         die "Password required but no terminal available (use --password or YMT_PASSWORD)\n";
     }
