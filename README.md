@@ -40,8 +40,9 @@ chmod +x ~/bin/ymt
 ### Usage:
 ```bash
 ymt --help
-ydb -p myydb tools dump -o migration_backup/ -p sys_user
-ymt -h pghost -U postgres --query="SELECT username as code,full_name as name FROM users" --scheme=migration_backup/sys_user/scheme.pb -o auto
-ydb -p myydb tools restore -p . -i migration_backup/
+
+ydb -p myydb tools dump -p users --scheme-only -o migration_backup
+ymt -h pghost -U postgres --query="SELECT name as username,email FROM users" --scheme=migration_backup/users/scheme.pb --add-id=id
+ydb -p myydb tools restore -i migration_backup -p .
 ```
 Note: column aliases in the SQL query must match the column names of the YDB table.
