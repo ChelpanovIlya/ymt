@@ -29,7 +29,7 @@ $Data::Dumper::Terse = 1;
 
 our $VERSION="1.1.2";
 
-our ($QUERY, $INPUT_FILE, $SCHEME, $OUTPUT_FILE, $DRIVER,
+our ($QUERY, $INPUT_FILE, $SCHEME, $OUTPUT_FILE, $DRIVER, $DRIVER_OPTIONS,
 $ADD_ID, $HASH_COLUMNS, $STD_UUID, $ASSUME_TIMEZONE, $TZ_OFFSET,
 $LIMIT, $PRINT_COLUMNS, $PRINT_SCHEME, $PRINT_RECORD, 
 $HOST, $PORT, $USER, $DB, $PASSWORD,
@@ -44,6 +44,7 @@ $HELP=!@ARGV;
 
 GetOptions(
   'driver=s'=>\$DRIVER,
+  'driver-options|O=s'=>\$DRIVER_OPTIONS,
   'query|q=s'=>\$QUERY,
   'input-file|f=s'=>\$INPUT_FILE,
   'scheme|s=s'=>\$SCHEME,
@@ -105,6 +106,9 @@ Row processing:
 Database connection:
   -D, --driver=NAME         DBI driver (default: Pg)
                             Examples: mysql, Pg, SQLite, Oracle  
+  -O, --driver-options=STR  Driver-specific DBI connection attributes
+                            as semicolon separated key=value pairs.
+                            Example for Oracle: service_name=XEPDB1
   -h, --host=HOST           Database host (default: localhost)
   -p, --port=PORT           Database port (default: 5432 for Pg, 3306 for MySQL)
   -U, --username=USER       Database user
@@ -158,12 +162,18 @@ if ( $DRIVER eq 'mysql' ) {
   $PORT||=3306;
 }
 
+if ( $DRIVER eq 'Oracle' ) {
+  $PORT||=1521;
+}
 my $dsn = "dbi:$DRIVER:";
 $dsn.="host=$HOST;" if $HOST;
 $dsn.="port=$PORT;" if $PORT;
 
 if ( $DB ) {
-  $dsn .= ";dbname=$DB";
+  $dsn .= "dbname=$DB;";
+}
+if ( $DRIVER_OPTIONS ) {
+  $dsn .= "$DRIVER_OPTIONS;";
 }
 
 if (defined($ASSUME_TIMEZONE)) {
@@ -191,12 +201,16 @@ if (!defined $PASSWORD && $USER) {
 }
 
 # Connect
+#print STDERR "Connecting to database: $dsn\n";
 my $dbh = DBI->connect($dsn, $USER, $PASSWORD, {
     RaiseError => 1,
     AutoCommit => 1,
     PrintError => 0,
 }) or die "Cannot connect to database (driver=$DRIVER): $DBI::errstr\n";
 
+if ( $DRIVER eq 'Oracle' ) {
+  $dbh->do("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD\"T\"HH24:MI:SS'") or die "Cannot ALTER SESSION SET NLS_DATE_FORMAT: $DBI::errstr\n";
+}
 
 # Prepare a query
 my $sth = $dbh->prepare($QUERY) or die "Cannot prepare: $DBI::errstr\n";
@@ -242,6 +256,9 @@ while (my $r = $sth->fetchrow_hashref) {
 
   if ( $HASH_COLUMNS ) {  
     for my $c ( split(",",$HASH_COLUMNS) ) {
+      if ($DRIVER eq 'Oracle') {
+        $c=uc($c);
+      }
       if ( exists($r->{$c}) ) {
         $r->{$c} = hash_column($r->{$c});
       }
@@ -264,6 +281,10 @@ $dbh->disconnect();
 sub map_data {
     my ($r, $c, $type) = @_;
     
+    if ($DRIVER eq 'Oracle') {
+        $c=uc($c);
+    }
+
     # Handle missing (NULL) values
     if (!exists $r->{$c}) {
         return "null";
@@ -298,6 +319,9 @@ sub map_data {
           }
           if ($val =~ /^(\d\d\d\d)-(\d\d)-(\d\d)[ T]\d\d:\d\d:\d\d(.\d\d\d\d\d\d)?$/) {
               $val .="Z";
+          }
+          if ($val !~ /^(\d\d\d\d)-(\d\d)-(\d\d)/ && $val !~ /^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z/ && $val !~ /^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)\.(\d{6})Z/) {
+              die "Error: datetime column '$c' (type: $type) format invalid: <$val>\n";
           }
         }
         return $val;
