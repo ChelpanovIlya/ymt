@@ -209,7 +209,21 @@ SQL запрос может возвращать меньше колонок, ч
 
 Драйвер позволяет использовать CSV файлы в качестве источника данных.
 
-Например, нужно загрузить данные в таблицу countries
+### Инсталляция драйвера CSV
+
+Должны быть установлены средства сборки
+```bash
+sudo apt install build-essential perl-dev
+```
+
+Сам драйвер нужно установить командой:
+```bash
+cpan install Text::CSV_XS DBD::CSV
+```
+
+### Использование драйвера CSV
+
+Для примера, нужно загрузить данные в таблицу countries
 ```sql
 CREATE TABLE countries (
     alpha2    Utf8,
@@ -259,13 +273,102 @@ myydb>
 #данные импортированы успешно
 ```
 
-Перед использованием драйвера его нужно установить командой:
-```bash
-cpan install Text::CSV_XS DBD::CSV
-```
 Вся обработка SQL для драйвера CSV выполняется посредством модуля [SQL::Statement](https://metacpan.org/pod/SQL::Statement). За более подробной информацией о возможностях обратитесь к документации [SQL::Statement](https://metacpan.org/pod/SQL::Statement). Среди них — соединения (joins), псевдонимы (aliases), встроенные функции и другие возможности. Описание поддерживаемого в DBD::CSV синтаксиса SQL приведено в [SQL::Statement::Syntax](https://metacpan.org/pod/SQL::Statement::Syntax).
 
 Названия таблиц и колонок не чувствительны к регистру, если они не заключены в кавычки. Названия колонок будут очищены от непечатаемых или некорректных символов.
+
+## Использование драйвера Oracle
+
+### Инсталляция драйвера Oracle
+Должны быть установлены средства сборки
+```bash
+sudo apt install build-essential perl-dev
+```
+
+Должен быть установлен Oracle client, например Instant Client. Нужно устанавить следующие части клиента:
+- basic
+- sdk
+- sqlplus
+
+Скачать [Instant client](https://www.oracle.com/database/technologies/instant-client/linux-x86-64-downloads.html) для Linux. Рекомендуется скопировать каталог с номером версии из поставки в /opt/oracle и создать симлинк /opt/oracle/instantclient на него. В каталоге нужно проверить корректность симлинков на библиотеки (маленкие .so файлы размером десятки байт должны быть симлинками на соответствующие "большие" файлы библиотек). При необходимости - удалить файлы-пустышки и создать симлинки на библиотеки.
+
+Чтобы cpan мог найти Oracle client, нужно установить переменные окружения:
+```bash
+export ORACLE_HOME=/opt/oracle/instantclient
+export LD_LIBRARY_PATH=/opt/oracle/instantclient:$LD_LIBRARY_PATH
+export PATH=/opt/oracle/instantclient:$PATH
+```
+Рекомендуется настроить cpan на установку модулей локально для пользователя, чтобы избежать проблем с видимостью переменных окружения при установке через sudo.
+```bash
+perl -MCPAN -e 'my $c = "CPAN::HandleConfig"; $c->load(doit => 1, autoconfig => 1); $c->edit(prerequisites_policy => "follow"); $c->commit'
+```
+
+Сам драйвер нужно установить командой:
+```bash
+cpan install DBD::Oracle
+```
+
+### Использование драйвера Oracle
+
+Смигрируем таблицу emp в схеме scott из Oracle в YDB. Структура целевой таблицы:
+```sql
+CREATE TABLE employe (
+    id          Utf8,
+    name        Utf8,
+    job         Utf8,
+    manager_id  Utf8,
+    hire_dt     Date,
+    salary      Decimal(22,9),
+    comission   Decimal(22,9),
+    department_id Utf8,
+    PRIMARY KEY (id)
+);
+```
+Запрос большой, указывать его в командной строке неудобно, запишем его в файл query.sql:
+```sql
+SELECT empno as id
+    , ename as name
+    , job
+    , mgr as manager_id
+    , hiredate as hire_dt
+    , sal as salary
+    , comm as comission
+    , deptno as department_id 
+FROM emp 
+WHERE job='ANALYST'
+```
+Запускаем миграцию с помощью ymt:
+```bash
+#получим схему таблицы
+ydb -p myydb tools dump -p employe -o migration_backup
+#используем ymt с драйвером Oracle для подготовки данных для импорта
+export YMT_PASSWORD=tiger
+ymt -driver=Oracle --driver-options="service_name=XEPDB1" -h localhost -U scott \
+--input-file=query.sql \
+--scheme=migration_backup/employe/scheme.pb \
+--assume-timezone=local
+--hash-columns=id,manager_id,department_id
+Converting date and time values to UTC using offset +03:00
+Writing to: migration_backup/employe/data_00.csv
+Wrote 2 records.
+#проверяем данные
+cat migration_backup/employe/data_00.csv
+"hmx-4BPFjwH6FTqNMsntVw","SCOTT","ANALYST","uTc4Slc7lMTXzGAExJb5GQ",1987-07-12T21:00:00Z,3000,null,"mPE3CCEBlMR1aHvmEGo7hA"
+"Zv4rzHAbtifhEb5oR6hDbA","FORD","ANALYST","uTc4Slc7lMTXzGAExJb5GQ",1981-12-02T21:00:00Z,3000,null,"mPE3CCEBlMR1aHvmEGo7hA"
+#импортируем данные
+ydb -p myydb tools restore -i migration_backup/ -p .
+#проверяем данные
+ydb -p myydb yql --script 'select * from employe'
+┌───────────┬───────────────┬──────────────┬────────┬───────────┬────────────┬─────────┬────────┐
+│ comission │ department_id │ hire_dt      │ id     │ job       │ manager_id │ name    │ salary │
+├───────────┼───────────────┼──────────────┼────────┼───────────┼────────────┼─────────┼────────┤
+│ null      │ "20"          │ "1987-07-12" │ "7788" │ "ANALYST" │ "7566"     │ "SCOTT" │ "3000" │
+├───────────┼───────────────┼──────────────┼────────┼───────────┼────────────┼─────────┼────────┤
+│ null      │ "20"          │ "1981-12-02" │ "7902" │ "ANALYST" │ "7566"     │ "FORD"  │ "3000" │
+└───────────┴───────────────┴──────────────┴────────┴───────────┴────────────┴─────────┴────────┘
+#данные импортированы успешно
+```
+
 
 ## Отладочные параметры
 
